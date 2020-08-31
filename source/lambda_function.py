@@ -160,7 +160,10 @@ def convert_csv(csv_update, csv_data):
                     data["type"] = "drink"
                 else:
                     data["type"] = "food"
-                data["tel"] = re.sub("[()-]", "", tel_list[i])
+                
+                if tel_list[i] is not np.nan and tel_list[i] is not None and tel_list[i] is not "":
+                    data["tel"] = re.sub("[()-]", "", tel_list[i])
+                    
                 data["title"] = title_list[i]
                 data["address"] = address_list[i]
                 data["homepage"] = hp_list[i]
