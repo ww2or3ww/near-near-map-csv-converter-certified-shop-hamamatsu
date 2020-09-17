@@ -23,6 +23,7 @@ API_ADDRESS                 = ""    if("API_ADDRESS" not in os.environ)         
 DYNAMODB_NAME               = ""    if("DYNAMODB_NAME" not in os.environ)           else os.environ["DYNAMODB_NAME"]
 DYNAMODB_KEY                = ""    if("DYNAMODB_KEY" not in os.environ)            else os.environ["DYNAMODB_KEY"]
 S3_BUCKET_NAME              = ""    if("S3_BUCKET_NAME" not in os.environ)          else os.environ["S3_BUCKET_NAME"]
+S3_PREFIX                   = ""    if("S3_PREFIX" not in os.environ)               else os.environ["S3_PREFIX"]
 SLACK_WEBHOOK_HAMAMATSU     = ""    if("SLACK_WEBHOOK_HAMAMATSU" not in os.environ) else os.environ["SLACK_WEBHOOK_HAMAMATSU"]
 
 DYNAMO_TABLE                = boto3.resource("dynamodb").Table(DYNAMODB_NAME)
@@ -33,22 +34,27 @@ def lambda_handler(event, context):
         logger.info("--- START ---")
         
         csv_data, csv_update = get_csv_data(get_api_address())
-        last_update = getLastUpdate()
+        last_update, last_data_count = getLastData()
         
         if csv_update == last_update:
             logger.info("not updated : {0}".format(csv_update))
             return
         
-        file_path = convert_csv(csv_update, csv_data)
+        file_path, data_count = convert_csv(csv_update, csv_data, last_data_count)
+        total_count = last_data_count + data_count
+        logger.info("csv update = {0}, data count = {1}".format(csv_update, data_count))
         
-        upload_s3(file_path, S3_BUCKET_NAME)
+        if data_count > 0:
+            upload_s3(file_path, S3_PREFIX, S3_BUCKET_NAME)
         
-        notifyToSlack(SLACK_WEBHOOK_HAMAMATSU, "CSV CONVERTER : CERTIFIED SHOP HAMAMATSU\n{0} -> {1}".format(last_update, csv_update))
+        notifyToSlack(SLACK_WEBHOOK_HAMAMATSU, 
+            "CSV CONVERTER : CERTIFIED SHOP HAMAMATSU\n{0}({1}) -> {2}({3}) (+{4})".format(
+                last_update, last_data_count, csv_update, total_count, data_count))
         
         if last_update is None:
-            insertItem(DYNAMODB_KEY, csv_update)
+            insertItem(DYNAMODB_KEY, csv_update, total_count)
         else:
-            updateItem(DYNAMODB_KEY, csv_update)
+            updateItem(DYNAMODB_KEY, csv_update, total_count)
 
     except Exception as e:
         logger.exception(e)
@@ -92,11 +98,19 @@ def get_csv_info_from_api_resources(resources):
             break
     return csv_address, csv_update
 
-def getLastUpdate():
+def getLastData():
+    last_update = None
+    last_data_count = 0
     record = selectItem(DYNAMODB_KEY)
     if record is None or record["Count"] is 0:
-        return None
-    return record["Items"][0]["value"]
+        return None, 0
+    
+    last_update = record["Items"][0]["value"]
+    
+    if "data1" in record["Items"][0]:
+        last_data_count = int(record["Items"][0]["data1"])
+
+    return last_update, last_data_count
 
 @retry(tries=3, delay=1)
 def selectItem(key):
@@ -105,33 +119,36 @@ def selectItem(key):
     )
 
 @retry(tries=3, delay=1)
-def insertItem(key, update):
+def insertItem(key, update, data_count):
     DYNAMO_TABLE.put_item(
       Item = {
         "key": key, 
-        "value": update
+        "value": update, 
+        "data1": data_count
       }
     )
 
 @retry(tries=3, delay=1)
-def updateItem(key, update):
+def updateItem(key, update, data_count):
     DYNAMO_TABLE.update_item(
         Key={
             "key": key
         },
-        UpdateExpression="set #value = :value",
+        UpdateExpression="set #value = :value, #data1 = :data1",
         ExpressionAttributeNames={
-            "#value": "value"
+            "#value": "value", 
+            "#data1": "data1"
         },
         ExpressionAttributeValues={
-            ":value": update
+            ":value": update, 
+            ":data1": data_count
         }
     )
 
 @retry(tries=3, delay=1)
-def upload_s3(file_path, bucket_name):
+def upload_s3(file_path, prefix, bucket_name):
     name = os.path.basename(file_path)
-    key = os.path.join("crawler", name)
+    key = os.path.join(prefix, name)
     S3_CLIENT.upload_file(Filename = file_path, Bucket = bucket_name, Key = key)
 
 @retry(tries=3, delay=1)
@@ -139,8 +156,9 @@ def notifyToSlack(webhook_url, text):
     slack = slackweb.Slack(url = webhook_url)
     slack.notify(text = text)
 
-def convert_csv(csv_update, csv_data):
+def convert_csv(csv_update, csv_data, last_data_count):
     try:
+        data_count = 0
         local_file_path = "/tmp/hamamatsu_certified_{0}.csv".format(csv_update)
         with open(local_file_path, "w") as file:
             writer = csv.writer(file)
@@ -152,8 +170,10 @@ def convert_csv(csv_update, csv_data):
             hp_list = csv_data["店舗_Webサイト"]
             kind_lsit = csv_data["店舗_業態_産業分類名"]
             
-            length = len(title_list)
-            for i in range(length):
+            for i in range(len(title_list)):
+                if i < last_data_count:
+                    continue
+                data_count += 1
                 data = {}
                 kind = kind_lsit[i]
                 if "喫茶店" in kind:
@@ -164,12 +184,14 @@ def convert_csv(csv_update, csv_data):
                 if tel_list[i] is not np.nan and tel_list[i] is not None and tel_list[i] is not "":
                     data["tel"] = re.sub("[()-]", "", tel_list[i])
                     
-                data["title"] = title_list[i]
+                data["title"] = re.sub("　", " ", title_list[i])
                 data["address"] = address_list[i]
                 data["homepage"] = hp_list[i]
+                data["star"] = 1
                 writeCsvLine(writer, data)
                 
-        return local_file_path
+        return local_file_path, data_count
+    
     except Exception as e:
         logger.exception(e)
         raise e
