@@ -32,13 +32,18 @@ S3_CLIENT                   = boto3.client("s3")
 def lambda_handler(event, context):
     try:
         logger.info("--- START ---")
+        logger.info(event)
         
         csv_data, csv_update = get_csv_data(get_api_address())
         last_update, last_data_count = getLastData()
         
         if csv_update == last_update:
             logger.info("not updated : {0}".format(csv_update))
-            return
+            event["Result"] = 304
+            return {
+                "statusCode": 304,
+                "body": "Not Modified"
+            }
         
         file_path, data_count = convert_csv(csv_update, csv_data, last_data_count)
         total_count = last_data_count + data_count
@@ -47,14 +52,20 @@ def lambda_handler(event, context):
         if data_count > 0:
             upload_s3(file_path, S3_PREFIX, S3_BUCKET_NAME)
         
-        notifyToSlack(SLACK_WEBHOOK_HAMAMATSU, 
-            "CSV CONVERTER : CERTIFIED SHOP HAMAMATSU\n{0}({1}) -> {2}({3}) (+{4})".format(
-                last_update, last_data_count, csv_update, total_count, data_count))
+        message = "CSV CONVERTER : CERTIFIED SHOP HAMAMATSU\n{0}({1}) -> {2}({3}) (+{4})".format(
+            last_update, last_data_count, csv_update, total_count, data_count)
+        notifyToSlack(SLACK_WEBHOOK_HAMAMATSU, message)
         
         if last_update is None:
             insertItem(DYNAMODB_KEY, csv_update, total_count)
         else:
             updateItem(DYNAMODB_KEY, csv_update, total_count)
+
+        event["Result"] = 200
+        return {
+            "statusCode": 200,
+            "body": message
+        }
 
     except Exception as e:
         logger.exception(e)
@@ -62,6 +73,7 @@ def lambda_handler(event, context):
             "statusCode": 500,
             "body": "error"
         }
+        
     finally:
         logger.info("--- FINALLY ---")
 
