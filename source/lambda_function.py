@@ -25,6 +25,7 @@ DYNAMODB_KEY                = ""    if("DYNAMODB_KEY" not in os.environ)        
 S3_BUCKET_NAME              = ""    if("S3_BUCKET_NAME" not in os.environ)          else os.environ["S3_BUCKET_NAME"]
 S3_PREFIX                   = ""    if("S3_PREFIX" not in os.environ)               else os.environ["S3_PREFIX"]
 SLACK_WEBHOOK_HAMAMATSU     = ""    if("SLACK_WEBHOOK_HAMAMATSU" not in os.environ) else os.environ["SLACK_WEBHOOK_HAMAMATSU"]
+MESSAGE_CAPTION             = "CSV CONVERTER : CERTIFIED SHOP HAMAMATSU"
 
 DYNAMO_TABLE                = boto3.resource("dynamodb").Table(DYNAMODB_NAME)
 S3_CLIENT                   = boto3.client("s3")
@@ -52,7 +53,7 @@ def lambda_handler(event, context):
         if data_count > 0:
             upload_s3(file_path, S3_PREFIX, S3_BUCKET_NAME)
         
-        message = "CSV CONVERTER : CERTIFIED SHOP HAMAMATSU\n{0}({1}) -> {2}({3}) (+{4})".format(
+        message = MESSAGE_CAPTION + "\n{0}({1}) -> {2}({3}) (+{4})".format(
             last_update, last_data_count, csv_update, total_count, data_count)
         notifyToSlack(SLACK_WEBHOOK_HAMAMATSU, message)
         
@@ -69,6 +70,7 @@ def lambda_handler(event, context):
 
     except Exception as e:
         logger.exception(e)
+        notifyToSlack(SLACK_WEBHOOK_HAMAMATSU, MESSAGE_CAPTION + "\n Exception : " + e.__class__.__name__)
         return {
             "statusCode": 500,
             "body": "error"
@@ -86,7 +88,7 @@ def get_csv_data(api_address):
     resources = api_response["result"]["resources"]
     csv_address, csv_update = get_csv_info_from_api_resources(resources)
     res = requests_with_retry(csv_address).content
-    csv_data = pd.read_csv(io.StringIO(res.decode("shift-jis")), sep=",", engine="python")
+    csv_data = pd.read_csv(io.StringIO(res.decode("cp932")), sep=",", engine="python")
     return csv_data, csv_update
 
 @retry(tries=3, delay=1)
